@@ -2,7 +2,7 @@
 import streamlit as st
 import requests
 
-API_KEY = "YOUR_NEWSAPI_KEY"
+API_KEY = "6720bdf041f942e3a472dcfdc722fa9c"
 
 URL = (
     f"https://newsapi.org/v2/top-headlines?"
