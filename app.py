@@ -7,7 +7,7 @@ import streamlit as st
 from bs4 import BeautifulSoup
 
 st.set_page_config(
-    page_title="Swarup Royal News Desk",
+    page_title="Swarup Personal News Desk",
     page_icon="👑",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -16,6 +16,7 @@ st.set_page_config(
 # -----------------------------
 # Configuration
 # -----------------------------
+GNEWS_API_KEY = "6720bdf041f942e3a472dcfdc722fa9c"
 GNEWS_URL = "https://gnews.io/api/v4/search"
 GOLD_URL = "https://www.goodreturns.in/gold-rates/bhubaneswar.html"
 
