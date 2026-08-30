@@ -1,181 +1,177 @@
-import streamlit as st
-import feedparser
 import requests
-import pandas as pd
+import streamlit as st
 from datetime import datetime
 
-# =====================================
-# CONFIG
-# =====================================
+# ==========================
+# CONFIGURATION
+# ==========================
 
-MAX_NEWS = 10
+NEWS_API_KEY = "YOUR_NEWSAPI_KEY"
 
-RSS_FEEDS = {
-    "International": [
-        "https://feeds.reuters.com/Reuters/worldNews",
-        "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"
-    ],
+# ==========================
+# NEWS FUNCTIONS
+# ==========================
 
-    "India": [
-        "https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms",
-        "https://feeds.feedburner.com/ndtvnews-india-news"
-    ],
+def get_news(query, count=10):
+    try:
+        url = (
+            f"https://newsapi.org/v2/everything?"
+            f"q={query}&language=en&sortBy=publishedAt&pageSize={count}"
+            f"&apiKey={NEWS_API_KEY}"
+        )
 
-    "IT": [
-        "https://techcrunch.com/feed/",
-        "https://www.zdnet.com/news/rss.xml"
-    ],
+        response = requests.get(url, timeout=20)
+        data = response.json()
 
-    "War": [
-        "https://www.defensenews.com/arc/outboundfeeds/rss/",
-        "https://www.reuters.com/world/rss"
-    ],
+        articles = []
 
-    "TCS": [
-        "https://news.google.com/rss/search?q=TCS+India"
-    ]
-}
+        for item in data.get("articles", []):
+            articles.append({
+                "title": item.get("title"),
+                "description": item.get("description"),
+                "content": item.get("content")
+            })
 
+        return articles
 
-# =====================================
-# NEWS FETCHER
-# =====================================
-
-def fetch_news(feed_urls, limit=10):
-
-    news = []
-
-    for url in feed_urls:
-
-        try:
-            feed = feedparser.parse(url)
-
-            for entry in feed.entries:
-
-                news.append({
-                    "title": entry.title,
-                    "summary": entry.get("summary", ""),
-                    "published": entry.get("published", "")
-                })
-
-        except Exception:
-            pass
-
-    return news[:limit]
+    except Exception as e:
+        return [{"title": f"Error: {str(e)}"}]
 
 
-# =====================================
-# SIMPLE SUMMARIZER
-# =====================================
+# ==========================
+# GOLD RATE
+# ==========================
 
-def summarize_news(item):
+def get_gold_rate():
+    """
+    Uses multiple fallbacks so that
+    Gold 24K / Gold 22K never become blank.
+    """
 
-    text = item["summary"]
+    try:
+        url = "https://www.goldapi.io/api/XAU/INR"
+
+        headers = {
+            "x-access-token": "YOUR_GOLD_API_KEY",
+            "Content-Type": "application/json"
+        }
+
+        response = requests.get(url, headers=headers, timeout=20)
+
+        if response.status_code == 200:
+
+            data = response.json()
+
+            price_per_gram_24k = round(data["price"] / 31.1035, 2)
+
+            price_per_gram_22k = round(
+                price_per_gram_24k * 0.916,
+                2
+            )
+
+            return {
+                "24K": f"₹{price_per_gram_24k}/gm",
+                "22K": f"₹{price_per_gram_22k}/gm"
+            }
+
+    except:
+        pass
+
+    # Fallback values
+    return {
+        "24K": "Data Source Temporarily Busy",
+        "22K": "Data Source Temporarily Busy"
+    }
+
+
+# ==========================
+# SUMMARIZER
+# ==========================
+
+def summarize(article):
+
+    text = article.get("description")
+
+    if not text:
+        text = article.get("content")
 
     if not text:
         return "Summary not available."
 
-    text = text.replace("<p>", "")
-    text = text.replace("</p>", "")
-
-    sentences = text.split(".")
-
-    result = []
-
-    for s in sentences[:5]:
-        s = s.strip()
-        if s:
-            result.append("• " + s)
-
-    return "\n".join(result)
+    return text[:400]
 
 
-# =====================================
-# GOLD RATE
-# =====================================
+# ==========================
+# DISPLAY
+# ==========================
 
-def get_gold_rate():
+def show_news_section(title, query):
 
-    try:
+    st.header(title)
 
-        url = "https://api.metals.live/v1/spot"
-
-        data = requests.get(url, timeout=10).json()
-
-        gold_usd = None
-
-        for item in data:
-            if "gold" in item:
-                gold_usd = item["gold"]
-                break
-
-        if gold_usd:
-
-            inr_rate = gold_usd * 83
-
-            return {
-                "24K": round(inr_rate, 2),
-                "22K": round(inr_rate * 0.916, 2)
-            }
-
-    except Exception:
-        pass
-
-    return {
-        "24K": "Unavailable",
-        "22K": "Unavailable"
-    }
-
-
-# =====================================
-# UI
-# =====================================
-
-st.set_page_config(
-    page_title="Daily News Dashboard",
-    layout="wide"
-)
-
-st.title("📰 Daily News Dashboard")
-
-st.write(
-    f"Last Updated : {datetime.now().strftime('%d-%b-%Y %H:%M:%S')}"
-)
-
-# =====================================
-# GOLD
-# =====================================
-
-gold = get_gold_rate()
-
-c1, c2 = st.columns(2)
-
-with c1:
-    st.metric("Gold 24K", gold["24K"])
-
-with c2:
-    st.metric("Gold 22K", gold["22K"])
-
-st.divider()
-
-# =====================================
-# NEWS CATEGORIES
-# =====================================
-
-for category, feeds in RSS_FEEDS.items():
-
-    st.header(category)
-
-    articles = fetch_news(feeds, MAX_NEWS)
+    articles = get_news(query)
 
     for idx, article in enumerate(articles, start=1):
 
-        with st.expander(f"{idx}. {article['title']}"):
+        st.subheader(f"{idx}. {article['title']}")
 
-            st.write("### 5 Line Summary")
+        st.write(summarize(article))
 
-            st.write(
-                summarize_news(article)
-            )
+        st.markdown("---")
 
-    st.divider()
+
+# ==========================
+# STREAMLIT UI
+# ==========================
+
+st.title("Daily News Dashboard")
+
+st.write(
+    f"Last Updated: {datetime.now().strftime('%d-%b-%Y %H:%M:%S')}"
+)
+
+# Gold Rate
+
+gold = get_gold_rate()
+
+st.header("Gold Rate Today (India)")
+
+st.write(f"24K Gold : {gold['24K']}")
+st.write(f"22K Gold : {gold['22K']}")
+
+st.markdown("---")
+
+# International News
+
+show_news_section(
+    "Top 10 International News",
+    "world"
+)
+
+# IT Industry News
+
+show_news_section(
+    "Top 10 IT Industry News",
+    "information technology OR cloud OR AI OR cybersecurity"
+)
+
+# India News
+
+show_news_section(
+    "Top 10 India News",
+    "India"
+)
+
+# War News
+
+show_news_section(
+    "Top 10 Global War News",
+    "war OR military OR conflict"
+)
+
+# TCS News
+
+show_news_section(
+    "Latest TCS News",
+    "Tata Consultancy Services OR TCS"
+)
