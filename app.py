@@ -1,53 +1,142 @@
-
+from gnews import GNews
 import streamlit as st
-import requests
+import pandas as pd
+from datetime import datetime
 
-API_KEY = "6720bdf041f942e3a472dcfdc722fa9c"
+# ---------------------------------------
+# Configuration
+# ---------------------------------------
 
-URL = (
-    f"https://newsapi.org/v2/top-headlines?"
-    f"category=general&language=en&pageSize=10&apiKey={API_KEY}"
+google_news = GNews(
+    language='en',
+    country='IN',
+    max_results=10
 )
 
+# ---------------------------------------
+# Function
+# ---------------------------------------
+
+def fetch_news(search_term, limit=10):
+
+    try:
+        articles = google_news.get_news(search_term)
+
+        news_list = []
+
+        for article in articles[:limit]:
+
+            title = article.get("title", "N/A")
+            description = article.get("description", "No description available")
+            source = article.get("publisher", {}).get("title", "Unknown")
+
+            news_list.append({
+                "Title": title,
+                "Source": source,
+                "Description": description
+            })
+
+        return news_list
+
+    except Exception as e:
+        return [{
+            "Title": "Error",
+            "Source": "",
+            "Description": str(e)
+        }]
+
+
+# ---------------------------------------
+# Streamlit UI
+# ---------------------------------------
+
 st.set_page_config(
-    page_title="International News",
-    page_icon="🌍",
+    page_title="Global News Dashboard",
     layout="wide"
 )
 
-st.title("🌍 Top 10 International News")
+st.title("📰 Global News Dashboard")
 
-try:
-    response = requests.get(URL, timeout=20)
-    data = response.json()
+st.write(
+    f"Last Refreshed: {datetime.now().strftime('%d-%b-%Y %H:%M:%S')}"
+)
 
-    if data["status"] == "ok":
-        articles = data["articles"]
+tab1, tab2, tab3, tab4 = st.tabs([
+    "International",
+    "IT Industry",
+    "India",
+    "War"
+])
 
-        for idx, article in enumerate(articles, start=1):
+# ---------------------------------------
+# International News
+# ---------------------------------------
 
-            title = article.get("title", "No Title")
-            description = article.get(
-                "description",
-                "Description not available."
-            )
+with tab1:
 
-            st.subheader(f"{idx}. {title}")
+    st.header("🌎 Top International News")
 
-            if len(description) > 200:
-                description = description[:200] + "..."
+    news = fetch_news("world")
 
-            st.write(description)
+    for i, item in enumerate(news, 1):
 
-            if article.get("url"):
-                st.markdown(
-                    f"[Read Full Article]({article['url']})"
-                )
+        st.subheader(f"{i}. {item['Title']}")
+        st.write(f"**Source:** {item['Source']}")
+        st.write(item['Description'])
+        st.divider()
 
-            st.divider()
 
-    else:
-        st.error("Unable to fetch news.")
+# ---------------------------------------
+# IT News
+# ---------------------------------------
 
-except Exception as e:
-    st.error(f"Error: {e}")
+with tab2:
+
+    st.header("💻 IT Industry News")
+
+    news = fetch_news("technology")
+
+    for i, item in enumerate(news, 1):
+
+        st.subheader(f"{i}. {item['Title']}")
+        st.write(f"**Source:** {item['Source']}")
+        st.write(item['Description'])
+        st.divider()
+
+
+# ---------------------------------------
+# India News
+# ---------------------------------------
+
+with tab3:
+
+    st.header("🇮🇳 India News")
+
+    news = fetch_news("India")
+
+    for i, item in enumerate(news, 1):
+
+        st.subheader(f"{i}. {item['Title']}")
+        st.write(f"**Source:** {item['Source']}")
+        st.write(item['Description'])
+        st.divider()
+
+
+# ---------------------------------------
+# War News
+# ---------------------------------------
+
+with tab4:
+
+    st.header("⚔️ Global War News")
+
+    news = fetch_news(
+        "Ukraine Russia OR Israel Hamas OR conflict"
+    )
+
+    for i, item in enumerate(news, 1):
+
+        st.subheader(f"{i}. {item['Title']}")
+        st.write(f"**Source:** {item['Source']}")
+        st.write(item['Description'])
+        st.divider()
