@@ -1,15 +1,15 @@
 import streamlit as st
 import requests
 import feedparser
-import re
 from bs4 import BeautifulSoup
-from urllib.parse import quote
 from datetime import datetime
-from email.utils import parsedate_to_datetime
+from urllib.parse import quote
+import re
+import html
 
 
 # ============================================================
-# STREAMLIT CONFIGURATION
+# CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -18,96 +18,123 @@ st.set_page_config(
     layout="wide"
 )
 
-
-# ============================================================
-# CONSTANTS
-# ============================================================
-
-GOODRETURNS_URL = "https://www.goodreturns.in/gold-rates/bhubaneswar.html"
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/151.0 Safari/537.36"
+        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
     )
 }
 
-
-# ============================================================
-# PAGE TITLE
-# ============================================================
-
-st.title("📰 Daily News Dashboard")
-
-st.caption(
-    "International • IT Industry • India • War & Conflicts • TCS India • Gold"
-)
-
-st.write(
-    f"Last update: {datetime.now().strftime('%d %B %Y, %I:%M %p')}"
-)
+GOLD_URL = "https://www.goodreturns.in/gold-rates/bhubaneswar.html"
 
 
 # ============================================================
-# GOOGLE NEWS RSS
+# PAGE CSS
 # ============================================================
 
-def google_news_rss(query, language="en-IN", country="IN"):
-    """
-    Get Google News RSS results for a search query.
-    """
+st.markdown("""
+<style>
 
-    encoded_query = quote(query)
+.main-title {
+    font-size: 38px;
+    font-weight: 700;
+    text-align: center;
+    margin-bottom: 5px;
+}
 
-    url = (
-        f"https://news.google.com/rss/search?"
-        f"q={encoded_query}"
-        f"&hl={language}"
-        f"&gl={country}"
-        f"&ceid={country}:{language[:2]}"
-    )
+.subtitle {
+    text-align: center;
+    color: gray;
+    margin-bottom: 25px;
+}
 
-    try:
-        response = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=20
-        )
+.news-card {
+    padding: 15px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    border: 1px solid #dddddd;
+    background-color: #fafafa;
+}
 
-        response.raise_for_status()
+.news-title {
+    font-size: 19px;
+    font-weight: 650;
+    margin-bottom: 8px;
+}
 
-        feed = feedparser.parse(response.content)
+.news-summary {
+    font-size: 15px;
+    line-height: 1.55;
+}
 
-        news = []
+.news-source {
+    font-size: 12px;
+    color: gray;
+    margin-top: 8px;
+}
 
-        for entry in feed.entries:
+.gold-card {
+    padding: 25px;
+    border-radius: 12px;
+    border: 1px solid #dddddd;
+    text-align: center;
+}
 
-            title = clean_text(entry.get("title", ""))
+.gold-price {
+    font-size: 30px;
+    font-weight: 700;
+}
 
-            summary = clean_text(
-                entry.get("summary", "")
-            )
+</style>
+""", unsafe_allow_html=True)
 
-            published = entry.get("published", "")
 
-            source = ""
+# ============================================================
+# NEWS CATEGORIES
+# ============================================================
 
-            if hasattr(entry, "source"):
-                source = entry.source.get("title", "")
+NEWS_CATEGORIES = {
 
-            news.append({
-                "title": title,
-                "summary": summary,
-                "published": published,
-                "source": source
-            })
+    "🌎 Top International News": [
+        "international world news",
+        "global politics",
+        "world economy",
+        "United States world news",
+        "Europe world news",
+    ],
 
-        return news
+    "💻 Top IT Industry News": [
+        "technology IT industry",
+        "artificial intelligence technology",
+        "cloud computing technology",
+        "cybersecurity technology",
+        "Microsoft Google Amazon technology",
+    ],
 
-    except Exception as e:
+    "🇮🇳 Top India News": [
+        "India latest news",
+        "India politics",
+        "India economy",
+        "India business",
+        "India government",
+    ],
 
-        return []
+    "⚔️ Top War / Global Conflict News": [
+        "war conflict latest",
+        "Ukraine Russia war",
+        "Iran conflict war",
+        "Israel conflict war",
+        "Middle East conflict",
+    ],
+
+    "🏆 TCS News — India": [
+        "TCS Tata Consultancy Services India",
+        "TCS India business",
+        "TCS India technology",
+        "TCS jobs India",
+        "TCS contract India",
+    ],
+}
 
 
 # ============================================================
@@ -119,9 +146,10 @@ def clean_text(text):
     if not text:
         return ""
 
-    soup = BeautifulSoup(text, "html.parser")
+    text = html.unescape(text)
 
-    text = soup.get_text(" ", strip=True)
+    soup = BeautifulSoup(text, "html.parser")
+    text = soup.get_text(" ")
 
     text = re.sub(r"\s+", " ", text)
 
@@ -129,79 +157,232 @@ def clean_text(text):
 
 
 # ============================================================
-# REMOVE DUPLICATE NEWS
+# CREATE GOOGLE NEWS RSS URL
 # ============================================================
 
-def remove_duplicates(news):
+def google_news_rss(query):
 
-    unique = []
+    encoded_query = quote(query)
 
-    seen = set()
-
-    for item in news:
-
-        title = item["title"].lower()
-
-        # Remove punctuation
-        normalized = re.sub(
-            r"[^a-z0-9 ]",
-            "",
-            title
-        )
-
-        normalized = re.sub(
-            r"\s+",
-            " ",
-            normalized
-        ).strip()
-
-        if normalized in seen:
-            continue
-
-        seen.add(normalized)
-
-        unique.append(item)
-
-    return unique
-
-
-# ============================================================
-# SORT NEWS BY DATE
-# ============================================================
-
-def sort_by_date(news):
-
-    def get_date(item):
-
-        try:
-            return parsedate_to_datetime(
-                item["published"]
-            )
-
-        except Exception:
-
-            return datetime.min
-
-    return sorted(
-        news,
-        key=get_date,
-        reverse=True
+    return (
+        "https://news.google.com/rss/search?"
+        f"q={encoded_query}"
+        "&hl=en-IN"
+        "&gl=IN"
+        "&ceid=IN:en"
     )
 
 
 # ============================================================
-# GET TOP NEWS
+# FETCH NEWS
 # ============================================================
 
-def get_top_news(query, count=10):
+def fetch_news(query, limit=10):
 
-    news = google_news_rss(query)
+    url = google_news_rss(query)
 
-    news = remove_duplicates(news)
+    try:
 
-    news = sort_by_date(news)
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=20
+        )
 
-    return news[:count]
+        response.raise_for_status()
+
+        feed = feedparser.parse(response.content)
+
+        articles = []
+
+        for entry in feed.entries:
+
+            title = clean_text(
+                entry.get("title", "")
+            )
+
+            description = clean_text(
+                entry.get("description", "")
+            )
+
+            source = ""
+
+            if hasattr(entry, "source"):
+                source = clean_text(
+                    entry.source.get("title", "")
+                )
+
+            published = entry.get(
+                "published",
+                ""
+            )
+
+            if not title:
+                continue
+
+            articles.append({
+                "title": title,
+                "summary": description,
+                "source": source,
+                "published": published
+            })
+
+        return articles[:limit]
+
+    except Exception as e:
+
+        st.warning(
+            f"Unable to fetch news for: {query}"
+        )
+
+        return []
+
+
+# ============================================================
+# FETCH MULTIPLE QUERIES
+# ============================================================
+
+def collect_category_news(queries, total=10):
+
+    all_news = []
+
+    for query in queries:
+
+        news = fetch_news(
+            query,
+            limit=5
+        )
+
+        all_news.extend(news)
+
+    # --------------------------------------------------------
+    # Remove duplicate headlines
+    # --------------------------------------------------------
+
+    unique_news = []
+
+    seen = set()
+
+    for item in all_news:
+
+        normalized_title = re.sub(
+            r"[^a-z0-9]",
+            "",
+            item["title"].lower()
+        )
+
+        if normalized_title in seen:
+            continue
+
+        seen.add(normalized_title)
+
+        unique_news.append(item)
+
+        if len(unique_news) >= total:
+            break
+
+    return unique_news
+
+
+# ============================================================
+# CREATE SHORT SUMMARY
+# ============================================================
+
+def create_summary(text):
+
+    text = clean_text(text)
+
+    if not text:
+        return "Details are available in the latest report."
+
+    # Google News descriptions can contain long text.
+    # Convert them into approximately 2-3 sentences.
+
+    sentences = re.split(
+        r"(?<=[.!?])\s+",
+        text
+    )
+
+    sentences = [
+        s.strip()
+        for s in sentences
+        if len(s.strip()) > 20
+    ]
+
+    if len(sentences) >= 3:
+
+        summary = " ".join(
+            sentences[:3]
+        )
+
+    elif len(sentences) >= 1:
+
+        summary = " ".join(
+            sentences[:2]
+        )
+
+    else:
+
+        summary = text
+
+    if len(summary) > 550:
+
+        summary = summary[:550]
+
+        last_space = summary.rfind(" ")
+
+        if last_space > 0:
+            summary = summary[:last_space]
+
+        summary += "..."
+
+    return summary
+
+
+# ============================================================
+# DISPLAY NEWS
+# ============================================================
+
+def display_news(news):
+
+    if not news:
+
+        st.warning(
+            "No news available at the moment."
+        )
+
+        return
+
+    for index, item in enumerate(news, 1):
+
+        title = item["title"]
+
+        summary = create_summary(
+            item["summary"]
+        )
+
+        source = item["source"]
+
+        st.markdown(
+            f"""
+            <div class="news-card">
+
+                <div class="news-title">
+                    {index}. {html.escape(title)}
+                </div>
+
+                <div class="news-summary">
+                    {html.escape(summary)}
+                </div>
+
+                <div class="news-source">
+                    Source: {html.escape(source)}
+                </div>
+
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
 
 # ============================================================
@@ -209,12 +390,12 @@ def get_top_news(query, count=10):
 # ============================================================
 
 @st.cache_data(ttl=900)
-def get_gold_rate():
+def get_gold_rates():
 
     try:
 
         response = requests.get(
-            GOODRETURNS_URL,
+            GOLD_URL,
             headers=HEADERS,
             timeout=20
         )
@@ -226,343 +407,229 @@ def get_gold_rate():
             "html.parser"
         )
 
-        page_text = soup.get_text(
+        text = soup.get_text(
             " ",
             strip=True
         )
 
         # ----------------------------------------------------
-        # 24K
+        # Try to locate 24K and 22K values
         # ----------------------------------------------------
 
-        match_24k = re.search(
-            r"24 karat gold.*?₹\s*([\d,]+)\s*per gram",
-            page_text,
+        match_24 = re.search(
+            r"24K\s*Gold\s*/g\s*₹?\s*([\d,]+)",
+            text,
             re.IGNORECASE
         )
 
-        # ----------------------------------------------------
-        # 22K
-        # ----------------------------------------------------
-
-        match_22k = re.search(
-            r"22 karat gold.*?₹\s*([\d,]+)\s*per gram",
-            page_text,
+        match_22 = re.search(
+            r"22K\s*Gold\s*/g\s*₹?\s*([\d,]+)",
+            text,
             re.IGNORECASE
         )
 
-        # Fallback pattern
-        if not match_24k:
+        price_24 = (
+            match_24.group(1)
+            if match_24
+            else None
+        )
 
-            match_24k = re.search(
-                r"24K\s*Gold\s*/g.*?₹\s*([\d,]+)",
-                page_text,
-                re.IGNORECASE
+        price_22 = (
+            match_22.group(1)
+            if match_22
+            else None
+        )
+
+        # ----------------------------------------------------
+        # Alternative table parsing
+        # ----------------------------------------------------
+
+        if not price_24 or not price_22:
+
+            tables = soup.find_all("table")
+
+            for table in tables:
+
+                table_text = clean_text(
+                    table.get_text(" ")
+                )
+
+                if (
+                    "24K" in table_text
+                    and "22K" in table_text
+                ):
+
+                    numbers = re.findall(
+                        r"₹?\s*([\d,]+)",
+                        table_text
+                    )
+
+                    if len(numbers) >= 2:
+
+                        price_24 = (
+                            price_24 or numbers[0]
+                        )
+
+                        price_22 = (
+                            price_22 or numbers[1]
+                        )
+
+                        break
+
+        return {
+            "24K": price_24,
+            "22K": price_22,
+            "updated": datetime.now().strftime(
+                "%d %B %Y, %I:%M %p"
             )
-
-        if not match_22k:
-
-            match_22k = re.search(
-                r"22K\s*Gold\s*/g.*?₹\s*([\d,]+)",
-                page_text,
-                re.IGNORECASE
-            )
-
-        result = {
-            "24K": None,
-            "22K": None
         }
 
-        if match_24k:
-            result["24K"] = match_24k.group(1)
-
-        if match_22k:
-            result["22K"] = match_22k.group(1)
-
-        return result
-
-    except Exception:
+    except Exception as e:
 
         return {
             "24K": None,
-            "22K": None
+            "22K": None,
+            "updated": "Unable to update"
         }
 
 
 # ============================================================
-# TCS NEWS
+# MAIN UI
 # ============================================================
 
-def get_tcs_news():
-
-    queries = [
-
-        '"Tata Consultancy Services" India',
-
-        '"TCS" India IT',
-
-        '"TCS" Tata Consultancy Services',
-
-        '"TCS" India technology',
-
-        '"TCS" deal India',
-
-    ]
-
-    all_news = []
-
-    for query in queries:
-
-        news = google_news_rss(query)
-
-        all_news.extend(news)
-
-    all_news = remove_duplicates(all_news)
-
-    all_news = sort_by_date(all_news)
-
-    return all_news[:10]
-
-
-# ============================================================
-# FIVE-LINE TCS EXPLANATION
-# ============================================================
-
-def create_tcs_explanation(item):
-
-    title = item["title"]
-
-    summary = item["summary"]
-
-    source = item["source"]
-
-    if not summary:
-        summary = (
-            "The report discusses a recent development involving "
-            "Tata Consultancy Services."
-        )
-
-    lines = [
-
-        f"1. {title}.",
-
-        f"2. The report focuses on {summary}.",
-
-        "3. The development is relevant to TCS's business, "
-        "technology, clients, employees or market position.",
-
-        "4. It may have implications for TCS's growth, "
-        "operations, technology strategy or investors.",
-
-        f"5. Reported by {source if source else 'a news source'}."
-
-    ]
-
-    return lines
-
-
-# ============================================================
-# DISPLAY NEWS
-# ============================================================
-
-def display_news(news, show_summary=False):
-
-    if not news:
-
-        st.warning(
-            "Unable to retrieve news at the moment."
-        )
-
-        return
-
-    for index, item in enumerate(news, start=1):
-
-        st.markdown(
-            f"### {index}. {item['title']}"
-        )
-
-        if show_summary and item["summary"]:
-
-            st.write(
-                item["summary"]
-            )
-
-        if item["source"]:
-
-            st.caption(
-                f"Source: {item['source']}"
-            )
-
-        st.divider()
-
-
-# ============================================================
-# NEWS QUERIES
-# ============================================================
-
-INTERNATIONAL_QUERY = (
-    "international world news OR global news"
+st.markdown(
+    '<div class="main-title">📰 DAILY NEWS DASHBOARD</div>',
+    unsafe_allow_html=True
 )
 
-IT_QUERY = (
-    "technology IT industry AI cloud cybersecurity "
-    "Microsoft Google Amazon Nvidia OpenAI"
-)
-
-INDIA_QUERY = (
-    "India news Narendra Modi government economy "
-    "business infrastructure"
-)
-
-WAR_QUERY = (
-    "war OR military conflict OR armed conflict "
-    "OR ceasefire OR airstrike OR battlefield"
+st.markdown(
+    '<div class="subtitle">'
+    'International • IT • India • Wars • TCS • Gold'
+    '</div>',
+    unsafe_allow_html=True
 )
 
 
 # ============================================================
-# GOLD SECTION
+# DATE
 # ============================================================
 
-st.header("🪙 Gold Rate Today — Bhubaneswar")
+current_time = datetime.now()
 
-gold = get_gold_rate()
+st.info(
+    "Last dashboard refresh: "
+    + current_time.strftime(
+        "%d %B %Y, %I:%M %p"
+    )
+)
+
+
+# ============================================================
+# REFRESH BUTTON
+# ============================================================
+
+col1, col2, col3 = st.columns(
+    [1, 1, 1]
+)
+
+with col2:
+
+    if st.button(
+        "🔄 Refresh News",
+        use_container_width=True
+    ):
+
+        st.cache_data.clear()
+
+        st.rerun()
+
+
+# ============================================================
+# GOLD
+# ============================================================
+
+st.header(
+    "🥇 Gold Rate — Bhubaneswar"
+)
+
+gold = get_gold_rates()
 
 col1, col2 = st.columns(2)
 
 with col1:
 
-    st.metric(
-        "24K Gold / Gram",
-        f"₹{gold['24K']}"
-        if gold["24K"]
-        else "Unavailable"
+    st.markdown(
+        f"""
+        <div class="gold-card">
+
+        <h3>24K Gold</h3>
+
+        <div class="gold-price">
+        ₹{gold["24K"] or "N/A"}
+        </div>
+
+        <p>Per Gram</p>
+
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
 with col2:
 
-    st.metric(
-        "22K Gold / Gram",
-        f"₹{gold['22K']}"
-        if gold["22K"]
-        else "Unavailable"
+    st.markdown(
+        f"""
+        <div class="gold-card">
+
+        <h3>22K Gold</h3>
+
+        <div class="gold-price">
+        ₹{gold["22K"] or "N/A"}
+        </div>
+
+        <p>Per Gram</p>
+
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
 st.caption(
-    "Rates are taken from GoodReturns Bhubaneswar gold-rate page."
+    "Gold data is collected from the specified GoodReturns "
+    "Bhubaneswar gold-rate page."
 )
 
 
 # ============================================================
-# INTERNATIONAL NEWS
+# NEWS
 # ============================================================
 
-st.header("🌍 Top 10 International News")
+for category, queries in NEWS_CATEGORIES.items():
 
-international_news = get_top_news(
-    INTERNATIONAL_QUERY,
-    10
-)
+    st.divider()
 
-display_news(
-    international_news,
-    show_summary=True
-)
+    st.header(category)
 
-
-# ============================================================
-# IT INDUSTRY NEWS
-# ============================================================
-
-st.header("💻 Top 10 IT Industry News")
-
-it_news = get_top_news(
-    IT_QUERY,
-    10
-)
-
-display_news(
-    it_news,
-    show_summary=True
-)
-
-
-# ============================================================
-# INDIA NEWS
-# ============================================================
-
-st.header("🇮🇳 Top 10 India News")
-
-india_news = get_top_news(
-    INDIA_QUERY,
-    10
-)
-
-display_news(
-    india_news,
-    show_summary=True
-)
-
-
-# ============================================================
-# WAR / CONFLICT NEWS
-# ============================================================
-
-st.header("⚔️ Top 10 War & Conflict News Worldwide")
-
-war_news = get_top_news(
-    WAR_QUERY,
-    10
-)
-
-display_news(
-    war_news,
-    show_summary=True
-)
-
-
-# ============================================================
-# TCS NEWS
-# ============================================================
-
-st.header("🏢 TCS News — India")
-
-tcs_news = get_tcs_news()
-
-if not tcs_news:
-
-    st.warning(
-        "No TCS news could be retrieved."
-    )
-
-else:
-
-    for index, item in enumerate(
-        tcs_news,
-        start=1
+    with st.spinner(
+        f"Collecting {category}..."
     ):
 
-        st.subheader(
-            f"{index}. {item['title']}"
+        news = collect_category_news(
+            queries,
+            total=10
         )
 
-        explanation = create_tcs_explanation(
-            item
-        )
-
-        for line in explanation:
-
-            st.write(line)
-
-        st.divider()
+    display_news(news)
 
 
 # ============================================================
 # FOOTER
 # ============================================================
 
+st.divider()
+
 st.caption(
-    "News is collected from publicly available online RSS/news sources. "
-    "News rankings are based on the returned feed results and may change "
-    "throughout the day."
+    "News dashboard automatically collects current "
+    "online news. Headlines and summaries may change "
+    "as news sources update."
 )
