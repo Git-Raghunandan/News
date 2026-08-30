@@ -1,5 +1,3 @@
-streamlit
-requests
-beautifulsoup4
-feedparser
-lxml
+streamlit>=1.38,<2
+requests>=2.32,<3
+beautifulsoup4>=4.12,<5
