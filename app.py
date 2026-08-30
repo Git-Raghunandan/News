@@ -1,218 +1,429 @@
-import os
 import re
-from datetime import datetime, timezone, timedelta
+import html
+from datetime import datetime
+from urllib.parse import quote
 
 import requests
+import feedparser
 import streamlit as st
 from bs4 import BeautifulSoup
 
+# ------------------------------------------------------------
+# Swarup News Dashboard
+# Streamlit dashboard: international, IT, India, Odisha,
+# TCS India, Bhubaneswar gold rates and India population.
+# ------------------------------------------------------------
+
 st.set_page_config(
-    page_title="Swarup Personal News Desk",
-    page_icon="👑",
+    page_title="Swarup News Dashboard",
+    page_icon="📰",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
-# -----------------------------
-# Configuration
-# -----------------------------
-GNEWS_API_KEY = "6720bdf041f942e3a472dcfdc722fa9c"
-GNEWS_URL = "https://gnews.io/api/v4/search"
-GOLD_URL = "https://www.goodreturns.in/gold-rates/bhubaneswar.html"
-
-CATEGORIES = {
-    "TOI Top 10": 'site:timesofindia.indiatimes.com',
-    "International Top 10": "international world latest news",
-    "IT Industry Top 10": "IT industry technology AI cloud cybersecurity software companies",
-    "India Top 10": "India latest national news",
-    "Odisha Top 10": "Odisha Bhubaneswar Cuttack latest news",
-    "TCS India Top 10": '"Tata Consultancy Services" OR TCS India',
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/151.0 Safari/537.36"
+    )
 }
 
-# -----------------------------
-# Royal dashboard styling
-# No HTML is used.
-# -----------------------------
-st.title("👑 SWARUP ROYAL NEWS DESK")
-st.caption("Sponsored by Swarup • Live online news intelligence dashboard")
+GOODRETURNS_URL = "https://www.goodreturns.in/gold-rates/bhubaneswar.html"
+WORLDMETERS_URL = "https://www.worldometers.info/world-population/india-population/"
 
-api_key = st.secrets.get("GNEWS_API_KEY", os.getenv("GNEWS_API_KEY", ""))
+# Google News RSS is used only as a news aggregation endpoint.
+# The dashboard intentionally does not display clickable article URLs.
+NEWS_QUERIES = {
+    "🌍 International News": "world international latest news",
+    "💻 IT Industry News": "technology IT industry AI cloud cybersecurity software",
+    "🇮🇳 India News": "India latest national news",
+    "🌊 Odisha News": "Odisha latest news Bhubaneswar Odisha",
+    "🏢 TCS News in India": '"TCS" India Tata Consultancy Services',
+}
 
-def clean_text(text):
-    if not text:
-        return ""
-    text = BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+CATEGORY_COLORS = {
+    "🌍 International News": "#4F46E5",
+    "💻 IT Industry News": "#0891B2",
+    "🇮🇳 India News": "#EA580C",
+    "🌊 Odisha News": "#059669",
+    "🏢 TCS News in India": "#7C3AED",
+}
 
-def fetch_news(query, max_items=10):
-    if not api_key:
-        return [{
-            "title": "GNews API key is not configured",
-            "description": "Add GNEWS_API_KEY in Streamlit Secrets or as an environment variable to activate live news feeds.",
-            "source": "System"
-        }]
 
-    params = {
-        "q": query,
-        "lang": "en",
-        "country": "in",
-        "max": max_items,
-        "apikey": api_key,
-    }
+def clean_text(value: str) -> str:
+    value = html.unescape(value or "")
+    soup = BeautifulSoup(value, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    return re.sub(r"\s+", " ", text).strip()
 
+
+def shorten(text: str, limit: int = 300) -> str:
+    text = clean_text(text)
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return cut + "…"
+
+
+def google_news_rss(query: str, limit: int = 10):
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={quote(query)}&hl=en-IN&gl=IN&ceid=IN:en"
+    )
     try:
-        response = requests.get(GNEWS_URL, params=params, timeout=20)
+        response = requests.get(url, headers=HEADERS, timeout=20)
         response.raise_for_status()
-        data = response.json()
-        articles = []
+        feed = feedparser.parse(response.content)
 
-        for item in data.get("articles", [])[:max_items]:
-            title = clean_text(item.get("title"))
-            description = clean_text(item.get("description"))
-            source = clean_text((item.get("source") or {}).get("name", "News source"))
+        items = []
+        seen = set()
 
-            if not title:
+        for entry in feed.entries:
+            title = clean_text(entry.get("title", ""))
+            # Google News often formats title as "Headline - Publisher".
+            publisher = ""
+            if " - " in title:
+                title, publisher = title.rsplit(" - ", 1)
+
+            summary = clean_text(entry.get("summary", ""))
+            key = re.sub(r"[^a-z0-9]+", "", title.lower())
+
+            if not title or key in seen:
                 continue
 
-            if not description:
-                description = "Latest update from the online news source."
+            seen.add(key)
+            items.append(
+                {
+                    "title": title,
+                    "summary": shorten(summary, 320)
+                    or "A developing story covered by the news feed.",
+                    "publisher": publisher or "News feed",
+                    "published": entry.get("published", ""),
+                }
+            )
 
-            articles.append({
-                "title": title,
-                "description": description,
-                "source": source,
-            })
+            if len(items) >= limit:
+                break
 
-        return articles
-
+        return items
     except Exception as exc:
-        return [{
-            "title": "Unable to load this news section",
-            "description": f"Temporary online-source/API problem: {exc}",
-            "source": "System"
-        }]
+        return [
+            {
+                "title": "News feed temporarily unavailable",
+                "summary": f"Could not refresh this section right now: {exc}",
+                "publisher": "System",
+                "published": "",
+            }
+        ]
 
-def fetch_gold():
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/151 Safari/537.36"
-        )
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_all_news():
+    return {name: google_news_rss(query, 10) for name, query in NEWS_QUERIES.items()}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_gold_rates():
+    response = requests.get(GOODRETURNS_URL, headers=HEADERS, timeout=20)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    text = clean_text(soup.get_text(" ", strip=True))
+
+    # Page wording currently contains:
+    # "₹15,824 per gram for 24 karat ... ₹14,505 per gram for 22 karat ..."
+    m24 = re.search(
+        r"today'?s gold price in bhubaneswar stands at\s*₹?\s*([\d,]+)\s*per gram for 24",
+        text,
+        flags=re.I,
+    )
+    m22 = re.search(
+        r"₹?\s*([\d,]+)\s*per gram for 22 karat",
+        text,
+        flags=re.I,
+    )
+
+    if not (m24 and m22):
+        # Fallback: use the table values around "Today Gold Price Per Gram".
+        m24 = re.search(r"1\s+₹([\d,]+)\s+₹([\d,]+)", text)
+        if m24:
+            return {"24K": m24.group(1), "22K": m24.group(2)}
+
+    if not (m24 and m22):
+        raise ValueError("Could not locate 24K/22K values on GoodReturns.")
+
+    return {
+        "24K": m24.group(1),
+        "22K": m22.group(1),
     }
 
-    try:
-        response = requests.get(GOLD_URL, headers=headers, timeout=20)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        text = clean_text(soup.get_text(" ", strip=True))
 
-        # GoodReturns page currently presents the rate as:
-        # "₹15,824 per gram for 24 karat ... ₹14,505 per gram for 22 karat"
-        match = re.search(
-            r"₹([\d,]+)\s+per gram for 24 karat.*?₹([\d,]+)\s+per gram for 22 karat",
-            text,
-            flags=re.I,
-        )
+@st.cache_data(ttl=900, show_spinner=False)
+def get_population():
+    response = requests.get(WORLDMETERS_URL, headers=HEADERS, timeout=20)
+    response.raise_for_status()
+    text = clean_text(BeautifulSoup(response.text, "html.parser").get_text(" ", strip=True))
 
-        if match:
-            return {
-                "24K": f"₹{match.group(1)} / gram",
-                "22K": f"₹{match.group(2)} / gram",
-                "status": "Live rate fetched from GoodReturns",
-            }
+    # Worldometer's current page contains a sentence such as:
+    # "The current population of India is 1,477,527,450 as of ..."
+    current = re.search(
+        r"The current population of India is\s*([\d,]+)",
+        text,
+        flags=re.I,
+    )
+    midyear = re.search(
+        r"India 2026 population is estimated at\s*([\d,]+)",
+        text,
+        flags=re.I,
+    )
 
-        # Fallback: parse the visible rate table.
-        for row in soup.find_all("tr"):
-            cells = [clean_text(c.get_text(" ", strip=True)) for c in row.find_all(["th", "td"])]
-            row_text = " | ".join(cells)
-            if "24K" in row_text and "22K" in row_text:
-                nums = re.findall(r"₹[\d,]+", row_text)
-                if len(nums) >= 2:
-                    return {
-                        "24K": f"{nums[0]} / gram",
-                        "22K": f"{nums[1]} / gram",
-                        "status": "Live rate fetched from GoodReturns",
-                    }
+    return {
+        "current": current.group(1) if current else "Unavailable",
+        "midyear_2026": midyear.group(1) if midyear else "Unavailable",
+    }
 
-        return {
-            "24K": "Unavailable",
-            "22K": "Unavailable",
-            "status": "GoodReturns page format changed; parser needs updating.",
-        }
 
-    except Exception as exc:
-        return {
-            "24K": "Unavailable",
-            "22K": "Unavailable",
-            "status": f"Gold feed error: {exc}",
-        }
+def render_news_card(item, accent):
+    st.markdown(
+        f"""
+        <div class="news-card" style="border-left: 5px solid {accent};">
+            <div class="headline">{html.escape(item["title"])}</div>
+            <div class="summary">{html.escape(item["summary"])}</div>
+            <div class="meta">{html.escape(item["publisher"])}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-def show_news_section(title, query):
-    st.subheader(title)
-    articles = fetch_news(query, 10)
 
-    for idx, article in enumerate(articles, 1):
-        st.markdown(f"**{idx}. {article['title']}**")
-        st.write(article["description"])
-        st.caption(f"Source: {article['source']}")
-        if idx != len(articles):
-            st.divider()
-
-# -----------------------------
-# Sidebar controls
-# -----------------------------
-with st.sidebar:
-    st.header("Dashboard Controls")
-    if st.button("🔄 Refresh All News", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
-
-    st.write("News mode: Live online fetch")
-    st.write("Dashboard: Royal")
-    st.write("Sponsor: Swarup")
-
-# -----------------------------
-# Header
-# -----------------------------
-now = datetime.now(timezone.utc).astimezone()
-st.info(
-    f"Last page refresh: {now.strftime('%d %B %Y, %I:%M %p %Z')}  •  "
-    "Open or refresh the Streamlit URL from WhatsApp to get current feeds."
+# ----------------------------- CSS -----------------------------
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background:
+            radial-gradient(circle at 5% 0%, rgba(79,70,229,.10), transparent 25%),
+            radial-gradient(circle at 95% 5%, rgba(14,165,233,.10), transparent 25%),
+            #f7f8fc;
+    }
+    .hero {
+        padding: 28px 30px;
+        border-radius: 22px;
+        background: linear-gradient(120deg, #111827, #312e81 55%, #0f766e);
+        color: white;
+        box-shadow: 0 12px 30px rgba(15,23,42,.15);
+        margin-bottom: 22px;
+    }
+    .hero h1 {
+        margin: 0;
+        font-size: 2.35rem;
+        letter-spacing: -.8px;
+    }
+    .hero p {
+        margin: 7px 0 0;
+        color: #e5e7eb;
+        font-size: 1rem;
+    }
+    .sponsor {
+        display: inline-block;
+        margin-top: 14px;
+        padding: 7px 13px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.14);
+        font-size: .88rem;
+        font-weight: 700;
+    }
+    .metric {
+        background: white;
+        border-radius: 18px;
+        padding: 18px 20px;
+        box-shadow: 0 7px 22px rgba(15,23,42,.08);
+        border: 1px solid #e5e7eb;
+        min-height: 115px;
+    }
+    .metric-label {
+        color: #64748b;
+        font-size: .86rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .7px;
+    }
+    .metric-value {
+        margin-top: 6px;
+        font-size: 1.75rem;
+        font-weight: 800;
+        color: #111827;
+    }
+    .metric-sub {
+        margin-top: 4px;
+        color: #64748b;
+        font-size: .78rem;
+    }
+    .section-title {
+        margin: 28px 0 12px;
+        font-size: 1.45rem;
+        font-weight: 800;
+        color: #111827;
+    }
+    .news-card {
+        background: white;
+        border-radius: 14px;
+        padding: 15px 17px;
+        margin: 9px 0;
+        box-shadow: 0 5px 18px rgba(15,23,42,.06);
+        border-top: 1px solid #eef2f7;
+        border-right: 1px solid #eef2f7;
+        border-bottom: 1px solid #eef2f7;
+    }
+    .headline {
+        font-size: 1.02rem;
+        line-height: 1.35;
+        font-weight: 800;
+        color: #172033;
+    }
+    .summary {
+        color: #475569;
+        line-height: 1.48;
+        margin-top: 7px;
+        font-size: .91rem;
+    }
+    .meta {
+        color: #94a3b8;
+        font-size: .75rem;
+        margin-top: 9px;
+        font-weight: 600;
+    }
+    .footer {
+        text-align: center;
+        color: #94a3b8;
+        padding: 28px 0 10px;
+        font-size: .82rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
-# Gold
-st.subheader("🪙 Gold Rate Today — Bhubaneswar")
-gold = fetch_gold()
+# ----------------------------- Header -----------------------------
+now = datetime.now().strftime("%d %B %Y, %I:%M %p")
 
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.metric("24K Gold", gold["24K"])
-with c2:
-    st.metric("22K Gold", gold["22K"])
-with c3:
-    st.metric("Feed", "GoodReturns")
+st.markdown(
+    f"""
+    <div class="hero">
+        <h1>📰 Swarup Daily News & Market Dashboard</h1>
+        <p>Fresh headlines, IT industry updates, India & Odisha news, TCS coverage, gold rates and India population.</p>
+        <span class="sponsor">Sponsored by Swarup</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-st.caption(gold["status"])
-st.divider()
+st.sidebar.title("⚙️ Dashboard")
+st.sidebar.caption("Refresh the page whenever you want the latest feed.")
+if st.sidebar.button("🔄 Refresh Now", use_container_width=True):
+    st.cache_data.clear()
+    st.rerun()
 
-# News sections
-show_news_section("📰 Times of India — Top 10", CATEGORIES["TOI Top 10"])
-st.divider()
+st.sidebar.markdown("### Sections")
+st.sidebar.markdown(
+    "- 🌍 International — 10\n"
+    "- 💻 IT Industry — 10\n"
+    "- 🇮🇳 India — 10\n"
+    "- 🌊 Odisha — 10\n"
+    "- 🏢 TCS India — 10\n"
+    "- 🪙 Bhubaneswar Gold — 24K & 22K\n"
+    "- 👥 India Population"
+)
 
-show_news_section("🌍 International — Top 10", CATEGORIES["International Top 10"])
-st.divider()
+# ----------------------------- Live metrics -----------------------------
+with st.spinner("Refreshing live market and population data…"):
+    try:
+        gold = get_gold_rates()
+    except Exception:
+        gold = {"24K": "Unavailable", "22K": "Unavailable"}
 
-show_news_section("💻 IT Industry — Top 10", CATEGORIES["IT Industry Top 10"])
-st.divider()
+    try:
+        population = get_population()
+    except Exception:
+        population = {"current": "Unavailable", "midyear_2026": "Unavailable"}
 
-show_news_section("🇮🇳 India — Top 10", CATEGORIES["India Top 10"])
-st.divider()
+m1, m2, m3, m4 = st.columns(4)
 
-show_news_section("🌊 Odisha — Top 10", CATEGORIES["Odisha Top 10"])
-st.divider()
+with m1:
+    st.markdown(
+        f'<div class="metric"><div class="metric-label">24K Gold</div>'
+        f'<div class="metric-value">₹{gold["24K"]}</div>'
+        f'<div class="metric-sub">per gram · Bhubaneswar</div></div>',
+        unsafe_allow_html=True,
+    )
 
-show_news_section("🏢 TCS India — Top 10", CATEGORIES["TCS India Top 10"])
+with m2:
+    st.markdown(
+        f'<div class="metric"><div class="metric-label">22K Gold</div>'
+        f'<div class="metric-value">₹{gold["22K"]}</div>'
+        f'<div class="metric-sub">per gram · Bhubaneswar</div></div>',
+        unsafe_allow_html=True,
+    )
 
-st.divider()
-st.caption("👑 SWARUP ROYAL NEWS DESK • Sponsored by Swarup")
+with m3:
+    st.markdown(
+        f'<div class="metric"><div class="metric-label">India Population</div>'
+        f'<div class="metric-value">{population["current"]}</div>'
+        f'<div class="metric-sub">current figure from Worldometer</div></div>',
+        unsafe_allow_html=True,
+    )
+
+with m4:
+    st.markdown(
+        f'<div class="metric"><div class="metric-label">Updated</div>'
+        f'<div class="metric-value">{datetime.now().strftime("%H:%M")}</div>'
+        f'<div class="metric-sub">{datetime.now().strftime("%d %b %Y")}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+st.caption(
+    f"Dashboard refresh time: {now}. Gold rates are indicative and may exclude GST, TCS and other levies."
+)
+
+# ----------------------------- News -----------------------------
+with st.spinner("Collecting the latest headlines…"):
+    news = get_all_news()
+
+# Render the four main sections as two-column grids.
+main_sections = [
+    "🌍 International News",
+    "💻 IT Industry News",
+    "🇮🇳 India News",
+    "🌊 Odisha News",
+]
+
+for left_name, right_name in zip(main_sections[::2], main_sections[1::2]):
+    left, right = st.columns(2)
+    with left:
+        st.markdown(f'<div class="section-title">{left_name}</div>', unsafe_allow_html=True)
+        for item in news.get(left_name, [])[:10]:
+            render_news_card(item, CATEGORY_COLORS[left_name])
+    with right:
+        st.markdown(f'<div class="section-title">{right_name}</div>', unsafe_allow_html=True)
+        for item in news.get(right_name, [])[:10]:
+            render_news_card(item, CATEGORY_COLORS[right_name])
+
+# TCS gets its own full-width area because the user requested an explanation.
+st.markdown('<div class="section-title">🏢 TCS News in India — Headlines & What It Means</div>',
+            unsafe_allow_html=True)
+st.info(
+    "The TCS section searches current coverage specifically for Tata Consultancy Services in India. "
+    "Each item includes a headline and a short plain-language explanation based on the feed summary."
+)
+for item in news.get("🏢 TCS News in India", [])[:10]:
+    render_news_card(item, CATEGORY_COLORS["🏢 TCS News in India"])
+
+st.markdown(
+    """
+    <div class="footer">
+        📰 Swarup Daily News & Market Dashboard · Sponsored by Swarup<br>
+        News summaries are generated from current online news feeds. Verify important information independently.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
