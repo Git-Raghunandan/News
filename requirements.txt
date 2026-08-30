@@ -1,4 +1,6 @@
 streamlit
-requests
 feedparser
+requests
 pandas
+beautifulsoup4
+google-generativeai
