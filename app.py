@@ -333,213 +333,60 @@ def display_news(title, articles):
     )
 
     if not articles:
-
         st.warning("No news available at the moment.")
-
         return
 
-    for index, article in enumerate(
-        articles[:MAX_NEWS],
-        start=1
-    ):
+    for index, article in enumerate(articles[:MAX_NEWS], start=1):
 
-        headline = article["title"]
+        headline = clean_text(article.get("title", ""))
+        summary = clean_text(article.get("summary", ""))
+        source = clean_text(article.get("source", ""))
 
-        summary = article["summary"]
+        # Remove source appended to headline
+        if source:
+            headline = headline.replace(
+                f" - {source}",
+                ""
+            )
 
-        source = article["source"]
+        # Clean Google News style summary
+        if source and source in summary:
+            summary = summary.replace(source, "")
 
-        # Remove common Google News source suffixes
-        headline = re.sub(
-            r"\s*-\s*[^-]+$",
-            "",
-            headline
-        )
+        # Remove headline duplicated inside summary
+        if headline and summary.startswith(headline):
+            summary = summary[len(headline):].strip()
 
-        # Keep summary short
-        if len(summary) > 360:
-            summary = summary[:357] + "..."
+        # Limit summary length
+        if len(summary) > 350:
+            summary = summary[:350] + "..."
 
         if not summary:
             summary = (
                 "This is one of the latest stories currently "
-                "being reported across online news sources."
+                "being reported by online news sources."
             )
 
         st.markdown(
             f"""
-            <div class="news-card">
+<div class="news-card">
+    <div class="news-number">{index:02d}</div>
 
-                <span class="news-number">
-                    {index:02d}
-                </span>
+    <div class="news-headline">
+        {html.escape(headline)}
+    </div>
 
-                <span class="news-headline">
-                    &nbsp; {html.escape(headline)}
-                </span>
+    <div class="news-summary">
+        {html.escape(summary)}
+    </div>
 
-                <div class="news-summary">
-                    {html.escape(summary)}
-                </div>
-
-                <div class="source">
-                    Source: {html.escape(source)}
-                </div>
-
-            </div>
-            """,
+    <div class="source">
+        Source: {html.escape(source)}
+    </div>
+</div>
+""",
             unsafe_allow_html=True
         )
-
-
-# ============================================================
-# GOLD RATE
-# ============================================================
-
-GOODRETURNS_URL = (
-    "https://www.goodreturns.in/gold-rates/bhubaneswar.html"
-)
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_gold_rate():
-
-    try:
-
-        response = requests.get(
-            GOODRETURNS_URL,
-            headers=HEADERS,
-            timeout=15
-        )
-
-        response.raise_for_status()
-
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser"
-        )
-
-        text = soup.get_text(
-            " ",
-            strip=True
-        )
-
-        text = re.sub(
-            r"\s+",
-            " ",
-            text
-        )
-
-        # Look around the current gold rate section.
-        match_24 = re.search(
-            r"24K\s*Gold\s*/g\s*₹\s*([\d,]+)",
-            text,
-            re.IGNORECASE
-        )
-
-        match_22 = re.search(
-            r"22K\s*Gold\s*/g\s*₹\s*([\d,]+)",
-            text,
-            re.IGNORECASE
-        )
-
-        # Fallback pattern
-        if not match_24:
-
-            match_24 = re.search(
-                r"24 karat gold.*?₹([\d,]+)",
-                text,
-                re.IGNORECASE
-            )
-
-        if not match_22:
-
-            match_22 = re.search(
-                r"22 karat gold.*?₹([\d,]+)",
-                text,
-                re.IGNORECASE
-            )
-
-        rate_24 = (
-            match_24.group(1)
-            if match_24
-            else "N/A"
-        )
-
-        rate_22 = (
-            match_22.group(1)
-            if match_22
-            else "N/A"
-        )
-
-        return rate_24, rate_22
-
-    except Exception:
-
-        return "N/A", "N/A"
-
-
-# ============================================================
-# GOLD DISPLAY
-# ============================================================
-
-def display_gold():
-
-    st.markdown(
-        '<div class="section-title">🪙 Gold Rate Today — Bhubaneswar</div>',
-        unsafe_allow_html=True
-    )
-
-    rate_24, rate_22 = get_gold_rate()
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.markdown(
-            f"""
-            <div class="gold-card">
-
-                <div class="gold-label">
-                    24 CARAT GOLD
-                </div>
-
-                <div class="gold-price">
-                    ₹{rate_24}
-                </div>
-
-                <div class="gold-unit">
-                    per gram
-                </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with col2:
-
-        st.markdown(
-            f"""
-            <div class="gold-card">
-
-                <div class="gold-label">
-                    22 CARAT GOLD
-                </div>
-
-                <div class="gold-price">
-                    ₹{rate_22}
-                </div>
-
-                <div class="gold-unit">
-                    per gram
-                </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
 
 # ============================================================
 # HEADER
