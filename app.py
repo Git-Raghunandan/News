@@ -28,9 +28,9 @@ SOURCES = {
         "color": "#2563eb",
     },
     "IT Industry News — Reuters Technology": {
-        "url": "https://www.reuters.com/technology/",
+        "url": "https://timesofindia.indiatimes.com/business/india-business/",
         "rss": [
-            "https://feeds.reuters.com/reuters/technologyNews",
+            "https://timesofindia.indiatimes.com/business/india-business/",
         ],
         "color": "#7c3aed",
     },
