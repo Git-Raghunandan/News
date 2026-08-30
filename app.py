@@ -1,15 +1,14 @@
 import re
 from datetime import datetime
-from urllib.parse import quote, urljoin
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote
 
 import feedparser
+import pandas as pd
 import requests
 import streamlit as st
 from bs4 import BeautifulSoup
 
-# -----------------------------
-# App configuration
-# -----------------------------
 st.set_page_config(
     page_title="Swarup Daily News Dashboard",
     page_icon="📰",
@@ -17,27 +16,219 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# -----------------------------
+# Configuration
+# -----------------------------
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/151.0 Safari/537.36"
+        "AppleWebKit/537.36 Chrome/151.0 Safari/537.36"
     )
 }
 
-OTV_URL = "https://odishatv.in/"
-GOLD_URL = "https://www.goodreturns.in/gold-rates/bhubaneswar.html"
+GOODRETURNS_URL = "https://www.goodreturns.in/gold-rates/bhubaneswar.html"
 TCS_URL = "https://www.tcs.com/who-we-are/newsroom"
-POPULATION_URL = "https://www.worldometers.info/world-population/india-population/"
+WORLDOMETERS_URL = "https://www.worldometers.info/world-population/india-population/"
 
-# Google News RSS is used for the three categories where the user did not
-# specify a particular publisher. It provides current headlines with links
-# to the originating story.
-NEWS_QUERIES = {
-    "International News": "world international news",
-    "IT Industry News": "IT industry technology artificial intelligence cloud cybersecurity software",
-    "India News": "India national news",
+# Google News RSS is used for the general news sections. It does not require an API key.
+RSS_FEEDS = {
+    "International": "https://news.google.com/rss/search?q=world+international+news+when%3A1d&hl=en-IN&gl=IN&ceid=IN%3Aen",
+    "India": "https://news.google.com/rss/search?q=India+news+when%3A1d&hl=en-IN&gl=IN&ceid=IN%3Aen",
+    "Odisha": "https://news.google.com/rss/search?q=Odisha+news+when%3A1d&hl=en-IN&gl=IN&ceid=IN%3Aen",
 }
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+@st.cache_data(ttl=600, show_spinner=False)
+def get_rss_news(url, limit=10):
+    feed = feedparser.parse(url)
+    items = []
+    seen = set()
+
+    for entry in feed.entries:
+        title = re.sub(r"\s+", " ", entry.get("title", "")).strip()
+        link = entry.get("link", "")
+        if not title or not link:
+            continue
+
+        # Google News titles commonly end with " - Publisher".
+        publisher = ""
+        if " - " in title:
+            title, publisher = title.rsplit(" - ", 1)
+
+        key = re.sub(r"[^a-z0-9]+", "", title.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        published = entry.get("published", "")
+        try:
+            dt = parsedate_to_datetime(published)
+            published_display = dt.strftime("%d %b %Y, %I:%M %p")
+        except Exception:
+            published_display = published
+
+        items.append(
+            {
+                "title": title,
+                "publisher": publisher or "News source",
+                "published": published_display,
+                "link": link,
+            }
+        )
+        if len(items) >= limit:
+            break
+
+    return items
+
+
+def fetch_html(url):
+    r = requests.get(url, headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    return r.text
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_gold_rates():
+    html = fetch_html(GOODRETURNS_URL)
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+
+    # First preference: the wording used in the GoodReturns page itself.
+    patterns = [
+        r"gold price in Bhubaneswar stands at ₹\s*([\d,]+)\s*per gram for 24 karat.*?"
+        r"₹\s*([\d,]+)\s*per gram for 22 karat",
+        r"Bhubaneswar.*?24K\s*Gold\s*/g.*?₹\s*([\d,]+).*?"
+        r"22K\s*Gold\s*/g.*?₹\s*([\d,]+)",
+    ]
+
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.I | re.S)
+        if m:
+            return {
+                "24K": int(m.group(1).replace(",", "")),
+                "22K": int(m.group(2).replace(",", "")),
+                "source": GOODRETURNS_URL,
+                "updated": datetime.now().strftime("%d %b %Y, %I:%M %p"),
+            }
+
+    raise ValueError("Could not locate 24K/22K gold rates on GoodReturns.")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_tcs_news(limit=10):
+    html = fetch_html(TCS_URL)
+    soup = BeautifulSoup(html, "html.parser")
+
+    results = []
+    seen = set()
+
+    # TCS newsroom pages contain article links under /who-we-are/newsroom/.
+    for a in soup.select("a[href]"):
+        title = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
+        href = a.get("href", "")
+
+        if not title or len(title) < 12:
+            continue
+        if "/who-we-are/newsroom/" not in href:
+            continue
+
+        if href.startswith("/"):
+            href = "https://www.tcs.com" + href
+        elif href.startswith("./"):
+            href = "https://www.tcs.com/who-we-are/newsroom/" + href[2:]
+
+        # Skip navigation/filter links and keep likely article titles.
+        low = title.lower()
+        if low in {"view all", "discover more", "press releases", "news alerts", "media kit"}:
+            continue
+
+        key = re.sub(r"[^a-z0-9]+", "", title.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        results.append({"title": title, "link": href})
+
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_population():
+    html = fetch_html(WORLDOMETERS_URL)
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+
+    # Worldometer publishes a live counter and a 2026 mid-year estimate.
+    live_match = re.search(
+        r"The current population of India is\s*([\d,]+)",
+        text,
+        flags=re.I,
+    )
+    estimate_match = re.search(
+        r"India 2026 population is estimated at\s*([\d,]+)",
+        text,
+        flags=re.I,
+    )
+
+    if not live_match and not estimate_match:
+        # Fallback to a table row containing 2026.
+        for row in soup.select("tr"):
+            cells = [c.get_text(" ", strip=True) for c in row.select("td")]
+            if cells and cells[0] == "2026" and len(cells) > 1:
+                estimate_match = re.match(r"([\d,]+)", cells[1])
+                break
+
+    return {
+        "live": live_match.group(1) if live_match else "Unavailable",
+        "mid_year_2026": estimate_match.group(1) if estimate_match else "Unavailable",
+        "source": WORLDOMETERS_URL,
+    }
+
+
+def money(value):
+    return f"₹{value:,.0f}"
+
+
+def render_news_card(item, index):
+    publisher = item.get("publisher", "")
+    published = item.get("published", "")
+    title = item["title"]
+    link = item["link"]
+
+    st.markdown(
+        f"""
+        <div class="news-card">
+            <div class="news-number">{index:02d}</div>
+            <div class="news-content">
+                <a href="{link}" target="_blank">{title}</a>
+                <div class="meta">{publisher} &nbsp;•&nbsp; {published}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_tcs_card(item, index):
+    st.markdown(
+        f"""
+        <div class="tcs-card">
+            <div class="news-number">{index:02d}</div>
+            <div class="news-content">
+                <a href="{item['link']}" target="_blank">{item['title']}</a>
+                <div class="meta">Tata Consultancy Services • TCS Newsroom</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 # -----------------------------
 # Styling
@@ -45,377 +236,293 @@ NEWS_QUERIES = {
 st.markdown(
     """
     <style>
-    .main {
-        background: linear-gradient(135deg, #f7fbff 0%, #eef4ff 45%, #fff8ef 100%);
+    .stApp {
+        background:
+            radial-gradient(circle at 10% 0%, rgba(59,130,246,.13), transparent 30%),
+            radial-gradient(circle at 95% 5%, rgba(168,85,247,.14), transparent 28%),
+            #f6f8fc;
     }
+
     .hero {
-        padding: 24px 28px;
-        border-radius: 20px;
-        background: linear-gradient(120deg, #172554, #2563eb, #7c3aed);
+        padding: 28px 30px;
+        border-radius: 24px;
+        background: linear-gradient(135deg, #0f172a 0%, #1d4ed8 48%, #7c3aed 100%);
         color: white;
-        margin-bottom: 18px;
-        box-shadow: 0 10px 30px rgba(37,99,235,.18);
+        box-shadow: 0 15px 35px rgba(15,23,42,.20);
+        margin-bottom: 22px;
     }
-    .hero h1 { margin: 0; font-size: 2.1rem; }
-    .hero p { margin: 8px 0 0; opacity: .92; }
+
+    .hero h1 {
+        font-size: 2.4rem;
+        margin: 0 0 6px 0;
+        font-weight: 800;
+    }
+
+    .hero p {
+        margin: 4px 0;
+        opacity: .92;
+    }
+
     .sponsor {
-        font-size: .95rem;
-        font-weight: 700;
-        letter-spacing: .4px;
-        margin-top: 12px;
+        display: inline-block;
+        margin-top: 14px;
+        padding: 7px 13px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.14);
+        border: 1px solid rgba(255,255,255,.25);
+        font-size: .88rem;
     }
-    .eco {
-        padding: 12px 16px;
-        border-radius: 12px;
-        background: #ecfdf5;
-        color: #065f46;
-        border: 1px solid #a7f3d0;
-        font-weight: 700;
-        text-align: center;
-        margin: 8px 0 18px;
+
+    .section-title {
+        font-size: 1.35rem;
+        font-weight: 800;
+        margin: 12px 0 10px 0;
+        color: #0f172a;
     }
-    .metric-card {
-        padding: 18px;
-        border-radius: 16px;
-        background: white;
+
+    .news-card, .tcs-card {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        background: rgba(255,255,255,.94);
         border: 1px solid #e5e7eb;
-        box-shadow: 0 6px 18px rgba(15,23,42,.06);
-    }
-    .news-card {
-        padding: 15px 16px;
+        border-left: 5px solid #2563eb;
         border-radius: 14px;
-        background: white;
-        border: 1px solid #e5e7eb;
+        padding: 12px 14px;
         margin: 8px 0;
-        box-shadow: 0 3px 12px rgba(15,23,42,.04);
+        box-shadow: 0 5px 16px rgba(15,23,42,.05);
     }
-    .news-card a {
+
+    .tcs-card {
+        border-left-color: #7c3aed;
+    }
+
+    .news-number {
+        font-weight: 900;
+        color: #2563eb;
+        min-width: 28px;
+    }
+
+    .news-content a {
+        color: #111827 !important;
         text-decoration: none;
         font-weight: 700;
-        color: #1d4ed8;
-        font-size: 1.02rem;
+        line-height: 1.35;
     }
-    .source {
+
+    .news-content a:hover {
+        color: #2563eb !important;
+    }
+
+    .meta {
+        color: #64748b;
+        font-size: .76rem;
+        margin-top: 5px;
+    }
+
+    .metric-card {
+        padding: 17px;
+        border-radius: 18px;
+        background: white;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 7px 22px rgba(15,23,42,.06);
+        text-align: center;
+    }
+
+    .metric-label {
         color: #64748b;
         font-size: .82rem;
-        margin-top: 6px;
+        font-weight: 700;
     }
-    footer { visibility: hidden; }
+
+    .metric-value {
+        font-size: 1.65rem;
+        font-weight: 900;
+        color: #0f172a;
+        margin-top: 4px;
+    }
+
+    .source-note {
+        color: #64748b;
+        font-size: .75rem;
+        margin-top: 5px;
+    }
+
+    .footer {
+        margin-top: 35px;
+        padding: 18px;
+        border-radius: 18px;
+        background: #0f172a;
+        color: white;
+        text-align: center;
+    }
+
+    .footer .eco {
+        font-size: 1.05rem;
+        font-weight: 800;
+        color: #86efac;
+    }
+
+    @media (max-width: 700px) {
+        .hero h1 { font-size: 1.8rem; }
+        .hero { padding: 22px; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # -----------------------------
-# Generic helpers
+# Header
 # -----------------------------
-def get_html(url: str, timeout: int = 20) -> str:
-    r = requests.get(url, headers=HEADERS, timeout=timeout)
-    r.raise_for_status()
-    return r.text
-
-
-def clean_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value or "").strip()
-
-
-def unique_items(items, limit=10):
-    out, seen = [], set()
-    for item in items:
-        title = clean_text(item.get("title", ""))
-        link = item.get("link", "")
-        key = (title.lower(), link)
-        if not title or not link or key in seen:
-            continue
-        seen.add(key)
-        item["title"] = title
-        out.append(item)
-        if len(out) >= limit:
-            break
-    return out
-
-
-def source_name_from_url(url: str) -> str:
-    try:
-        host = url.split("/")[2].lower()
-        return host.replace("www.", "")
-    except Exception:
-        return "Source"
-
-
-# -----------------------------
-# News feeds
-# -----------------------------
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_google_news(query: str, limit: int = 10):
-    rss_url = (
-        "https://news.google.com/rss/search?q="
-        + quote(query)
-        + "&hl=en-IN&gl=IN&ceid=IN:en"
-    )
-    feed = feedparser.parse(rss_url)
-    items = []
-    for e in feed.entries[:25]:
-        items.append({
-            "title": e.get("title", ""),
-            "link": e.get("link", ""),
-            "published": e.get("published", ""),
-            "source": (
-                e.get("source", {}).get("title", "")
-                if isinstance(e.get("source"), dict)
-                else ""
-            ) or source_name_from_url(e.get("link", "")),
-        })
-    return unique_items(items, limit)
-
-
-# -----------------------------
-# Odisha TV
-# -----------------------------
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_otv_news(limit: int = 10):
-    html = get_html(OTV_URL)
-    soup = BeautifulSoup(html, "html.parser")
-    items = []
-
-    for a in soup.find_all("a", href=True):
-        title = clean_text(a.get_text(" ", strip=True))
-        href = a["href"]
-        link = urljoin(OTV_URL, href)
-
-        if (
-            len(title) >= 20
-            and "odishatv.in" in link
-            and link.rstrip("/") != OTV_URL.rstrip("/")
-            and not any(x in link.lower() for x in [
-                "/videos", "/photos", "/search", "/tag/", "/author/",
-                "/category/", "/live-tv", "/weather"
-            ])
-        ):
-            items.append({
-                "title": title,
-                "link": link,
-                "published": "",
-                "source": "OdishaTV",
-            })
-
-    # Prefer URLs that look like article pages.
-    items.sort(key=lambda x: ("/odisha/" not in x["link"], -len(x["title"])))
-    return unique_items(items, limit)
-
-
-# -----------------------------
-# TCS Newsroom
-# -----------------------------
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_tcs_news(limit: int = 10):
-    html = get_html(TCS_URL)
-    soup = BeautifulSoup(html, "html.parser")
-    items = []
-
-    for a in soup.find_all("a", href=True):
-        title = clean_text(a.get_text(" ", strip=True))
-        link = urljoin(TCS_URL, a["href"])
-
-        if (
-            len(title) >= 20
-            and "tcs.com/who-we-are/newsroom" in link
-            and link.rstrip("/") != TCS_URL.rstrip("/")
-            and any(k in link.lower() for k in [
-                "/press-release/", "/news/", "/article/"
-            ])
-        ):
-            items.append({
-                "title": title,
-                "link": link,
-                "published": "",
-                "source": "TCS",
-            })
-
-    return unique_items(items, limit)
-
-
-# -----------------------------
-# Gold rate
-# -----------------------------
-@st.cache_data(ttl=600, show_spinner=False)
-def fetch_gold_rates():
-    html = get_html(GOLD_URL)
-    soup = BeautifulSoup(html, "html.parser")
-    text = clean_text(soup.get_text(" ", strip=True))
-
-    def find_rate(carat):
-        patterns = [
-            rf"{carat}\s*(?:K|Karats?|Karat)?\D{{0,80}}(?:₹|Rs\.?|INR)?\s*([\d,]+)",
-            rf"(?:₹|Rs\.?|INR)\s*([\d,]+)\D{{0,30}}{carat}\s*(?:K|Karats?|Karat)?",
-        ]
-        for p in patterns:
-            m = re.search(p, text, re.I)
-            if m:
-                return int(m.group(1).replace(",", ""))
-        return None
-
-    k24 = find_rate(24)
-    k22 = find_rate(22)
-
-    # Fallback: look around the explicit page heading.
-    if not k24 or not k22:
-        m = re.search(
-            r"today.*?₹\s*([\d,]+).*?for\s*22K.*?₹\s*([\d,]+).*?for\s*24K",
-            text, re.I
-        )
-        if m:
-            k22 = k22 or int(m.group(1).replace(",", ""))
-            k24 = k24 or int(m.group(2).replace(",", ""))
-
-    return {"24K": k24, "22K": k22, "url": GOLD_URL}
-
-
-# -----------------------------
-# India population
-# -----------------------------
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_population():
-    html = get_html(POPULATION_URL)
-    soup = BeautifulSoup(html, "html.parser")
-    text = clean_text(soup.get_text(" ", strip=True))
-
-    # Worldometer's current page normally exposes "India Population" followed
-    # by the live value. Try several patterns to survive layout changes.
-    patterns = [
-        r"India Population\s*([\d,]+)",
-        r"current population.*?India.*?([\d,]{8,})",
-        r"India\s+Population\s+([\d,]{8,})",
-    ]
-    for p in patterns:
-        m = re.search(p, text, re.I)
-        if m:
-            return {"population": m.group(1), "url": POPULATION_URL}
-
-    return {"population": None, "url": POPULATION_URL}
-
-
-# -----------------------------
-# UI
-# -----------------------------
-def render_news(items, empty_message="No stories found."):
-    if not items:
-        st.warning(empty_message)
-        return
-
-    for i, item in enumerate(items, start=1):
-        st.markdown(
-            f"""
-            <div class="news-card">
-                <div style="color:#64748b;font-size:.78rem;font-weight:700;">
-                    #{i} · {item.get("source","")}
-                </div>
-                <a href="{item["link"]}" target="_blank">{item["title"]}</a>
-                <div class="source">{item.get("published","")}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
 st.markdown(
     """
     <div class="hero">
         <h1>📰 Swarup Daily News Dashboard</h1>
-        <p>International • IT Industry • India • Odisha • TCS • Gold • Population</p>
+        <p>News • India • Odisha • Gold • TCS • Population — all in one place</p>
         <div class="sponsor">Sponsored by Swarup</div>
     </div>
-    <div class="eco">🌳 Save paper, save trees, save the Earth</div>
     """,
     unsafe_allow_html=True,
 )
 
-now = datetime.now().strftime("%d %b %Y, %I:%M %p")
-st.caption(f"Dashboard generated: {now}")
-
 with st.sidebar:
-    st.header("⚙️ Controls")
-    if st.button("🔄 Refresh all feeds", use_container_width=True):
+    st.markdown("### ⚙️ Dashboard")
+    st.caption("Live online sources are fetched when the page refreshes.")
+    if st.button("🔄 Refresh all data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
     st.markdown("---")
-    st.markdown("### Data sources")
-    st.markdown(
-        f"- [OdishaTV]({OTV_URL})\n"
-        f"- [Goodreturns – Bhubaneswar Gold]({GOLD_URL})\n"
-        f"- [TCS Newsroom]({TCS_URL})\n"
-        f"- [Worldometer – India Population]({POPULATION_URL})"
-    )
-    st.info(
-        "International, IT and India headlines are collected through "
-        "Google News RSS and link back to the original publisher."
-    )
+    st.markdown("### 🔗 Source pages")
+    st.markdown(f"[GoodReturns – Bhubaneswar Gold]({GOODRETURNS_URL})")
+    st.markdown(f"[TCS Newsroom]({TCS_URL})")
+    st.markdown(f"[Worldometer – India Population]({WORLDOMETERS_URL})")
+    st.caption("General news is collected through Google News RSS searches.")
 
-# Snapshot metrics
-with st.spinner("Updating dashboard..."):
-    gold = fetch_gold_rates()
-    population = fetch_population()
-    otv = fetch_otv_news()
-    tcs = fetch_tcs_news()
+# -----------------------------
+# Live indicators
+# -----------------------------
+st.markdown('<div class="section-title">📊 Today at a glance</div>', unsafe_allow_html=True)
+
+gold = None
+population = None
+errors = []
+
+try:
+    gold = get_gold_rates()
+except Exception as e:
+    errors.append(f"Gold: {e}")
+
+try:
+    population = get_population()
+except Exception as e:
+    errors.append(f"Population: {e}")
 
 m1, m2, m3, m4 = st.columns(4)
+
 with m1:
-    st.metric("🌍 International", "10")
+    st.markdown(
+        f'<div class="metric-card"><div class="metric-label">🥇 24K Gold / gram</div>'
+        f'<div class="metric-value">{money(gold["24K"]) if gold else "—"}</div>'
+        f'<div class="source-note">Bhubaneswar • GoodReturns</div></div>',
+        unsafe_allow_html=True,
+    )
+
 with m2:
-    st.metric("💻 IT Industry", "10")
+    st.markdown(
+        f'<div class="metric-card"><div class="metric-label">🪙 22K Gold / gram</div>'
+        f'<div class="metric-value">{money(gold["22K"]) if gold else "—"}</div>'
+        f'<div class="source-note">Bhubaneswar • GoodReturns</div></div>',
+        unsafe_allow_html=True,
+    )
+
 with m3:
-    st.metric("🇮🇳 India", "10")
+    st.markdown(
+        f'<div class="metric-card"><div class="metric-label">🇮🇳 India Live Population</div>'
+        f'<div class="metric-value">{population["live"] if population else "—"}</div>'
+        f'<div class="source-note">Worldometer live estimate</div></div>',
+        unsafe_allow_html=True,
+    )
+
 with m4:
-    st.metric("🟠 Odisha", "10")
+    st.markdown(
+        f'<div class="metric-card"><div class="metric-label">📅 2026 Mid-year Population</div>'
+        f'<div class="metric-value">{population["mid_year_2026"] if population else "—"}</div>'
+        f'<div class="source-note">Worldometer estimate</div></div>',
+        unsafe_allow_html=True,
+    )
 
-st.markdown("### 💰 Today's Gold & 🇮🇳 Population")
-c1, c2, c3 = st.columns(3)
-with c1:
-    val = f"₹{gold['24K']:,}" if gold["24K"] else "Unavailable"
-    st.metric("24K Gold / gram", val)
-    st.caption("Source: Goodreturns, Bhubaneswar")
-with c2:
-    val = f"₹{gold['22K']:,}" if gold["22K"] else "Unavailable"
-    st.metric("22K Gold / gram", val)
-    st.caption("Source: Goodreturns, Bhubaneswar")
-with c3:
-    val = population["population"] or "Unavailable"
-    st.metric("India Current Population", val)
-    st.caption("Source: Worldometer")
+if errors:
+    st.warning("Some live data could not be loaded: " + " | ".join(errors))
 
 st.markdown("---")
 
-tabs = st.tabs([
-    "🌍 International",
-    "💻 IT Industry",
-    "🇮🇳 India",
-    "🟠 Odisha",
-    "🏢 TCS News",
-])
+# -----------------------------
+# News sections
+# -----------------------------
+try:
+    international = get_rss_news(RSS_FEEDS["International"], 10)
+except Exception:
+    international = []
 
-with tabs[0]:
-    render_news(fetch_google_news(NEWS_QUERIES["International News"]))
+try:
+    india = get_rss_news(RSS_FEEDS["India"], 10)
+except Exception:
+    india = []
 
-with tabs[1]:
-    render_news(fetch_google_news(NEWS_QUERIES["IT Industry News"]))
+try:
+    odisha = get_rss_news(RSS_FEEDS["Odisha"], 10)
+except Exception:
+    odisha = []
 
-with tabs[2]:
-    render_news(fetch_google_news(NEWS_QUERIES["India News"]))
+left, right = st.columns(2, gap="large")
 
-with tabs[3]:
-    render_news(otv)
+with left:
+    st.markdown('<div class="section-title">🌍 Top 10 International News</div>', unsafe_allow_html=True)
+    if international:
+        for i, item in enumerate(international, 1):
+            render_news_card(item, i)
+    else:
+        st.info("International news is temporarily unavailable.")
 
-with tabs[4]:
-    render_news(tcs)
+with right:
+    st.markdown('<div class="section-title">🇮🇳 Top 10 India News</div>', unsafe_allow_html=True)
+    if india:
+        for i, item in enumerate(india, 1):
+            render_news_card(item, i)
+    else:
+        st.info("India news is temporarily unavailable.")
 
-st.markdown("---")
+st.markdown('<div class="section-title">🌊 Top 10 Odisha News</div>', unsafe_allow_html=True)
+if odisha:
+    for i, item in enumerate(odisha, 1):
+        render_news_card(item, i)
+else:
+    st.info("Odisha news is temporarily unavailable.")
+
+st.markdown('<div class="section-title">💻 Top TCS News</div>', unsafe_allow_html=True)
+try:
+    tcs = get_tcs_news(10)
+except Exception as e:
+    tcs = []
+    st.warning(f"TCS Newsroom could not be read right now: {e}")
+
+if tcs:
+    for i, item in enumerate(tcs, 1):
+        render_tcs_card(item, i)
+else:
+    st.info("TCS newsroom items are temporarily unavailable.")
+
+# -----------------------------
+# Footer
+# -----------------------------
+today = datetime.now().strftime("%d %B %Y")
 st.markdown(
-    """
-    <div style="text-align:center;padding:18px;color:#475569;">
-        <b>Sponsored by Swarup</b><br>
-        🌱 <b>Save paper, save trees, save the Earth</b><br>
-        <small>News belongs to the respective publishers. Use the source links to read the full stories.</small>
+    f"""
+    <div class="footer">
+        <div><strong>Sponsored by Swarup</strong> • Updated on {today}</div>
+        <div class="eco">🌳 Save paper, save trees, save the Earth</div>
     </div>
     """,
     unsafe_allow_html=True,
