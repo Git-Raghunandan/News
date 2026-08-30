@@ -1,142 +1,183 @@
-from gnews import GNews
 import streamlit as st
-import pandas as pd
+import requests
+import feedparser
 from datetime import datetime
 
-# ---------------------------------------
-# Configuration
-# ---------------------------------------
+NEWS_API_KEY = "YOUR_NEWSAPI_KEY"
 
-google_news = GNews(
-    language='en',
-    country='IN',
-    max_results=10
-)
+# ---------------------------
+# NewsAPI Function
+# ---------------------------
+def get_news(query=None, category=None, country=None, page_size=10):
 
-# ---------------------------------------
-# Function
-# ---------------------------------------
+    url = "https://newsapi.org/v2/top-headlines"
 
-def fetch_news(search_term, limit=10):
+    params = {
+        "apiKey": NEWS_API_KEY,
+        "pageSize": page_size
+    }
+
+    if query:
+        params["q"] = query
+
+    if category:
+        params["category"] = category
+
+    if country:
+        params["country"] = country
+
+    response = requests.get(url, params=params)
+
+    if response.status_code == 200:
+        return response.json().get("articles", [])
+
+    return []
+
+
+# ---------------------------
+# AI-like Summary
+# ---------------------------
+def summarize(article):
+
+    title = article.get("title", "")
+    desc = article.get("description", "")
+
+    summary = f"""
+1. {title}
+2. {desc}
+3. This news is currently receiving significant attention.
+4. It may impact related industries or regions.
+5. Readers should monitor future developments.
+"""
+
+    return summary
+
+
+# ---------------------------
+# Gold Rate
+# ---------------------------
+def get_gold_rate():
 
     try:
-        articles = google_news.get_news(search_term)
+        url = "https://api.gold-api.com/price/XAU"
 
-        news_list = []
+        response = requests.get(url)
 
-        for article in articles[:limit]:
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("price")
 
-            title = article.get("title", "N/A")
-            description = article.get("description", "No description available")
-            source = article.get("publisher", {}).get("title", "Unknown")
+    except:
+        pass
 
-            news_list.append({
-                "Title": title,
-                "Source": source,
-                "Description": description
-            })
-
-        return news_list
-
-    except Exception as e:
-        return [{
-            "Title": "Error",
-            "Source": "",
-            "Description": str(e)
-        }]
+    return "Not Available"
 
 
-# ---------------------------------------
-# Streamlit UI
-# ---------------------------------------
+# ---------------------------
+# TCS News
+# ---------------------------
+def get_tcs_news():
 
-st.set_page_config(
-    page_title="Global News Dashboard",
-    layout="wide"
-)
-
-st.title("📰 Global News Dashboard")
-
-st.write(
-    f"Last Refreshed: {datetime.now().strftime('%d-%b-%Y %H:%M:%S')}"
-)
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "International",
-    "IT Industry",
-    "India",
-    "War"
-])
-
-# ---------------------------------------
-# International News
-# ---------------------------------------
-
-with tab1:
-
-    st.header("🌎 Top International News")
-
-    news = fetch_news("world")
-
-    for i, item in enumerate(news, 1):
-
-        st.subheader(f"{i}. {item['Title']}")
-        st.write(f"**Source:** {item['Source']}")
-        st.write(item['Description'])
-        st.divider()
-
-
-# ---------------------------------------
-# IT News
-# ---------------------------------------
-
-with tab2:
-
-    st.header("💻 IT Industry News")
-
-    news = fetch_news("technology")
-
-    for i, item in enumerate(news, 1):
-
-        st.subheader(f"{i}. {item['Title']}")
-        st.write(f"**Source:** {item['Source']}")
-        st.write(item['Description'])
-        st.divider()
-
-
-# ---------------------------------------
-# India News
-# ---------------------------------------
-
-with tab3:
-
-    st.header("🇮🇳 India News")
-
-    news = fetch_news("India")
-
-    for i, item in enumerate(news, 1):
-
-        st.subheader(f"{i}. {item['Title']}")
-        st.write(f"**Source:** {item['Source']}")
-        st.write(item['Description'])
-        st.divider()
-
-
-# ---------------------------------------
-# War News
-# ---------------------------------------
-
-with tab4:
-
-    st.header("⚔️ Global War News")
-
-    news = fetch_news(
-        "Ukraine Russia OR Israel Hamas OR conflict"
+    rss_url = (
+        "https://news.google.com/rss/search?"
+        "q=TCS+India&hl=en-IN&gl=IN&ceid=IN:en"
     )
 
-    for i, item in enumerate(news, 1):
+    feed = feedparser.parse(rss_url)
 
-        st.subheader(f"{i}. {item['Title']}")
-        st.write(f"**Source:** {item['Source']}")
-        st.write(item['Description'])
-        st.divider()
+    return feed.entries[:10]
+
+
+# ---------------------------
+# UI
+# ---------------------------
+st.set_page_config(layout="wide")
+
+st.title("🌎 Daily News Dashboard")
+
+st.write(datetime.now())
+
+# ===================================
+# International News
+# ===================================
+st.header("Top 10 International News")
+
+international = get_news(page_size=10)
+
+for i, news in enumerate(international, 1):
+
+    st.subheader(f"{i}. {news['title']}")
+
+    st.write(summarize(news))
+
+    st.write(news["url"])
+
+# ===================================
+# IT News
+# ===================================
+st.header("Top 10 IT Industry News")
+
+it_news = get_news(category="technology", page_size=10)
+
+for i, news in enumerate(it_news, 1):
+
+    st.subheader(f"{i}. {news['title']}")
+
+    st.write(summarize(news))
+
+    st.write(news["url"])
+
+# ===================================
+# India News
+# ===================================
+st.header("Top 10 India News")
+
+india_news = get_news(country="in", page_size=10)
+
+for i, news in enumerate(india_news, 1):
+
+    st.subheader(f"{i}. {news['title']}")
+
+    st.write(summarize(news))
+
+    st.write(news["url"])
+
+# ===================================
+# War News
+# ===================================
+st.header("Top 10 War / Defense News")
+
+war_news = get_news(query="war OR military OR conflict", page_size=10)
+
+for i, news in enumerate(war_news, 1):
+
+    st.subheader(f"{i}. {news['title']}")
+
+    st.write(summarize(news))
+
+    st.write(news["url"])
+
+# ===================================
+# Gold Rate
+# ===================================
+st.header("Gold Rate Today (India)")
+
+gold = get_gold_rate()
+
+st.metric(
+    label="Gold Price",
+    value=str(gold)
+)
+
+# ===================================
+# TCS News
+# ===================================
+st.header("Top 10 TCS News")
+
+tcs_news = get_tcs_news()
+
+for i, news in enumerate(tcs_news, 1):
+
+    st.subheader(f"{i}. {news.title}")
+
+    st.write(news.link)
